@@ -1,0 +1,509 @@
+import scipy as sp
+# -*-coding: utf-8 -*-
+import pandas as pd
+import numpy as np
+from statsmodels.tsa.arima_model import ARIMA
+from sklearn.neighbors import KNeighborsClassifier
+import ipywidgets as widgets
+from ipywidgets import interact
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+pd.set_option('display.max_columns', None)
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import accuracy_score
+# from tensorflow.keras.models import Sequential
+# from tensorflow.keras.layers import Dense, Dropout
+# from tensorflow.keras import utils
+#
+# Загружаем данные
+url = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/'
+confirmed = pd.read_csv(url + 'time_series_covid19_confirmed_global.csv', sep = ',')
+deaths = pd.read_csv(url + 'time_series_covid19_deaths_global.csv', sep = ',')
+recovered = pd.read_csv(url + 'time_series_covid19_recovered_global.csv', sep = ',')
+# {2:d}-{1:02d}-{0:02d}     {0:02d}.{1:02d}.{2:d}
+# Пишем даты по-человечески в формате 'dd.mm.yy'
+new_cols = list(confirmed.columns[:4]) + list(confirmed.columns[4:].map(lambda x: '{0:02d}.{1:02d}.{2:d}'.format(int(x.split(sep='/')[1]), int(x.split(sep='/')[0]), int(x.split(sep='/')[2]))))
+confirmed.columns = new_cols
+recovered.columns = new_cols
+deaths.columns = new_cols
+
+# Формируем таблицы с ежедневными приращениями
+confirmed_daily = confirmed.copy()
+confirmed_daily.iloc[:,4:] = confirmed_daily.iloc[:,4:].diff(axis=1)
+deaths_daily = deaths.copy()
+# print(deaths_daily.iloc[:,4:])
+deaths_daily.iloc[:,4:] = deaths_daily.iloc[:,4:].diff(axis=1)
+recovered_daily = recovered.copy()
+recovered_daily.iloc[:,4:] = recovered_daily.iloc[:,4:].diff(axis=1)
+
+# Формируем таблицу со сглаженными ежедневными приращениями
+smooth_conf_daily = confirmed_daily.copy()
+# prirost_conf=smooth_conf_daily.iloc[:, 4:].sum()
+# print(prirost_conf)
+pr_confirmed=pd.DataFrame(smooth_conf_daily.drop(['Lat','Long','Province/State'],axis=1))
+pr_confirmed_and_allocated=pd.DataFrame((pr_confirmed.groupby(['Country/Region']).sum()).T)
+X_conf_pr=pr_confirmed_and_allocated.iloc[:len(pr_confirmed_and_allocated)-2, :]
+y_old_conf_pr=(pr_confirmed_and_allocated.iloc[2:,:]).T
+y_conf_pr=y_old_conf_pr.iloc[:,:].sum()
+X_conf_real_pr=pr_confirmed_and_allocated.iloc[(len(pr_confirmed_and_allocated)-1):len(pr_confirmed_and_allocated), :]
+# print(X_conf_pr)
+
+smooth_rec_daily=recovered_daily.copy()
+# prirost_rec=smooth_rec_daily.iloc[:, 4:].sum()
+pr_recovered=pd.DataFrame(smooth_rec_daily.drop(['Lat','Long','Province/State'],axis=1))
+pr_recovered_and_allocated=pd.DataFrame((pr_recovered.groupby(['Country/Region']).sum()).T)
+X_rec_pr=pr_recovered_and_allocated.iloc[:len(pr_recovered_and_allocated)-2, :]
+y_old_rec_pr=(pr_recovered_and_allocated.iloc[2:,:]).T
+y_rec_pr=y_old_rec_pr.iloc[:,:].sum()
+X_rec_real_pr=pr_recovered_and_allocated.iloc[(len(pr_recovered_and_allocated)-1):len(pr_recovered_and_allocated), :]
+
+
+
+smooth_death_daily=deaths_daily.copy()
+# prirost_death=smooth_death_daily.iloc[:, 4:].sum()
+# print(smooth_death_daily)
+pr_died=pd.DataFrame(smooth_death_daily.drop(['Lat','Long','Province/State'],axis=1))
+pr_died_and_allocated=pd.DataFrame((pr_died.groupby(['Country/Region']).sum()).T)
+X_died_pr=pr_died_and_allocated.iloc[:len(pr_died_and_allocated)-2, :]
+y_old_died_pr=(pr_died_and_allocated.iloc[2:,:]).T
+y_died_pr=y_old_died_pr.iloc[:,:].sum()
+X_died_real_pr=pr_died_and_allocated.iloc[(len(pr_died_and_allocated)-1):len(pr_died_and_allocated), :]
+
+
+
+# smooth_conf_daily.iloc[:,4:] = smooth_conf_daily.iloc[:,4:].rolling(window=8, min_periods=2, center=True, axis=1).mean()
+# smooth_conf_daily.iloc[:,4:] = smooth_conf_daily.iloc[:,4:].round(0)
+b=pd.DataFrame(smooth_conf_daily.iloc[:,4:].T)
+last_date = confirmed.columns[-1]
+
+
+confirmed_top = confirmed.iloc[:, [1, -1]].groupby('Country/Region').sum().sort_values(last_date, ascending = False).head(20)
+countries = list(confirmed_top.index)
+
+# Добавляем к списку Россию
+countries.append('Russia')
+
+recov=recovered.iloc[:, 4:]
+die=deaths.iloc[:, 4:]
+conf=confirmed.iloc[:, 4:]
+
+new_confirmed=pd.DataFrame(confirmed.drop(['Lat','Long','Province/State'],axis=1))
+new_confirmed_and_allocated=pd.DataFrame((new_confirmed.groupby(['Country/Region']).sum()).T)
+confirmed_Russia=new_confirmed_and_allocated['Russia']
+# print(len(new_confirmed_and_allocated)-1)
+# print(new_confirmed_and_allocated.iloc[:len(new_confirmed_and_allocated)-2, :])
+X_conf=new_confirmed_and_allocated.iloc[:len(new_confirmed_and_allocated)-2, :]
+y_old_conf=(new_confirmed_and_allocated.iloc[2:,:]).T
+y_conf=y_old_conf.iloc[:,:].sum()
+X_conf_real=new_confirmed_and_allocated.iloc[(len(new_confirmed_and_allocated)-1):len(new_confirmed_and_allocated), :]
+like_a_day=[(i+1) for i in range(0,len(new_confirmed_and_allocated)-2)]
+X_conf_1=pd.DataFrame(np.column_stack((np.array(like_a_day).T,X_conf)))
+# print(len(new_confirmed_and_allocated)-2)
+# print(len(like_a_day))
+# print(X_conf_1)
+
+new_recovered=recovered.drop(['Lat','Long','Province/State'],axis=1)
+new_recovered_and_allocated=pd.DataFrame((new_recovered.groupby(['Country/Region']).sum()).T)
+recovered_Russia=new_recovered_and_allocated['Russia']
+X_rec=new_recovered_and_allocated.iloc[:len(new_recovered_and_allocated)-2, :]
+# X_rec.at[X_rec==None]=0
+y_old_rec=(new_recovered_and_allocated.iloc[2:,:]).T
+y_rec=y_old_rec.iloc[:,:].sum()
+X_rec_real=new_recovered_and_allocated.iloc[(len(new_recovered_and_allocated)-1):len(new_recovered_and_allocated), :]
+
+
+new_deaths=(deaths.drop(['Lat','Long','Province/State'],axis=1))
+new_deaths_and_allocated=pd.DataFrame((new_deaths.groupby(['Country/Region']).sum()).T)
+X_death=new_deaths_and_allocated.iloc[:len(new_deaths_and_allocated)-2, :]
+y_old_deaths=(new_deaths_and_allocated.iloc[2:,:]).T
+y_death=y_old_deaths.iloc[:,:].sum()
+X_death_real=new_deaths_and_allocated.iloc[(len(new_deaths_and_allocated)-1):len(new_deaths_and_allocated), :]
+# print(len(new_confirmed_and_allocated))
+def knn_model(a):
+    if a==1:
+        from sklearn.linear_model import LogisticRegression
+        X_conf_norm = (X_conf_pr - X_conf_pr.mean()) / X_conf_pr.std()
+        X_conf_train,X_conf_test,y_conf_train,y_conf_test=train_test_split(X_conf_norm,y_conf_pr,test_size=0.3,random_state=13,)
+        N_train,_=X_conf_train.shape
+        N_test,_=X_conf_train.shape
+        knn = KNeighborsClassifier(n_neighbors=66, weights='distance')
+        knn.fit(X_conf_train,y_conf_train)
+        pred_conf_test=[round(abc) for abc in knn.predict(X_conf_test)]
+        pred_conf_train=[round(efg) for efg in knn.predict(X_conf_train)]
+
+        accuracy_train= accuracy_score(y_conf_train, pred_conf_train)
+        accuracy_test = accuracy_score(y_conf_test, pred_conf_test)
+        # print("Точность тренировочны данных: %.2f%%" % (accuracy_train * 100.0))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+        print("Модель KNN, показывает прирост заболевших на завтра: ",knn.predict(X_conf_real_pr))
+    elif a==2:
+        X_rec_norm = (X_rec_pr - X_rec_pr.mean()) / X_rec_pr.std()
+        X_rec_train, X_rec_test, y_rec_train, y_rec_test = train_test_split(X_rec, y_rec_pr, test_size=0.3,
+                                                                                random_state=13 )
+        N_train, _ = X_rec_train.shape
+        N_test, _ = X_rec_train.shape
+        knn = KNeighborsClassifier(n_neighbors=66, weights='distance', algorithm='kd_tree')
+        knn.fit(X_rec_train, y_rec_train)
+        pred_rec_test = [round(tt) for tt in knn.predict(X_rec_test)]
+        pred_rec_train = [round(ff) for ff in knn.predict(X_rec_train)]
+
+        accuracy_test = accuracy_score(y_rec_test, pred_rec_test)
+        accuracy_train = accuracy_score(y_rec_train, pred_rec_train)
+        print("Модель KNN, показывает  прирост выздоровевших на завтра: ", knn.predict(X_rec_real_pr))
+        # print("Точность тренировочных данных: %.2f%%" % (accuracy_train * 100.0))
+    elif a==3:
+        X_death_norm = (X_died_pr - X_died_pr.mean()) / X_died_pr.std()
+        X_deaths_train, X_deaths_test, y_death_train, y_death_test = train_test_split(X_death_norm, y_died_pr, test_size=0.2,
+                                                                                random_state=13)
+        N_train, _ = X_deaths_train.shape
+        N_test, _ = X_deaths_train.shape
+        knn = KNeighborsClassifier(n_neighbors=66, weights='distance', algorithm='kd_tree')
+        knn.fit(X_deaths_train, y_death_train)
+        pred_deaths_test = [round(foo) for foo in knn.predict(X_deaths_test)]
+        pred_deaths_train = [round(foot) for foot in knn.predict(X_deaths_train)]
+
+        accuracy_test = accuracy_score(y_death_test, pred_deaths_test)
+        accuracy_train = accuracy_score(y_death_train, pred_deaths_train)
+        print("Модель KNN, показывает  умерших на завтра: ", knn.predict(X_died_real_pr))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+    else:
+        print('Ты ввел неправльное число в данный метод, долбоёб! Введи 1,2 или 3')
+        print('a=1 -заразившиесяБ, a=2 -выздоровевшие, a=3 -умершие')
+
+knn_model(a=1)
+from sklearn.svm import SVC
+def svc(a):
+    if a==1:
+        from sklearn.linear_model import LogisticRegression
+        X_conf_norm = (X_conf_pr - X_conf_pr.mean()) / X_conf_pr.std()
+        X_conf_train,X_conf_test,y_conf_train,y_conf_test=train_test_split(X_conf_norm,y_conf_pr,test_size=0.3,random_state=13,)
+        N_train,_=X_conf_train.shape
+        N_test,_=X_conf_train.shape
+        knn = SVC()
+        knn.fit(X_conf_train,y_conf_train)
+        pred_conf_test=[round(abc) for abc in knn.predict(X_conf_test)]
+        pred_conf_train=[round(efg) for efg in knn.predict(X_conf_train)]
+
+        accuracy_train= accuracy_score(y_conf_train, pred_conf_train)
+        accuracy_test = accuracy_score(y_conf_test, pred_conf_test)
+        # print("Точность тренировочных данных: %.2f%%" % (accuracy_train * 100.0))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+        print("Модель SVC, показывает прирост заболевших на завтра: ",knn.predict(X_conf_real_pr))
+    elif a==2:
+        X_rec_norm = (X_rec_pr - X_rec_pr.mean()) / X_rec_pr.std()
+        X_rec_train, X_rec_test, y_rec_train, y_rec_test = train_test_split(X_rec, y_rec_pr, test_size=0.3,
+                                                                                random_state=13 )
+        N_train, _ = X_rec_train.shape
+        N_test, _ = X_rec_train.shape
+        knn = SVC()
+        knn.fit(X_rec_train, y_rec_train)
+        pred_rec_test = [round(tt) for tt in knn.predict(X_rec_test)]
+        pred_rec_train = [round(ff) for ff in knn.predict(X_rec_train)]
+
+        accuracy_test = accuracy_score(y_rec_test, pred_rec_test)
+        accuracy_train = accuracy_score(y_rec_train, pred_rec_train)
+        print("Модель SVC, показывает прирост выздоровевших на завтра: ", knn.predict(X_rec_real_pr))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+    elif a==3:
+        X_death_norm = (X_died_pr - X_died_pr.mean()) / X_died_pr.std()
+        X_deaths_train, X_deaths_test, y_death_train, y_death_test = train_test_split(X_death_norm, y_died_pr, test_size=0.2,
+                                                                                random_state=13)
+        N_train, _ = X_deaths_train.shape
+        N_test, _ = X_deaths_train.shape
+        knn = SVC()
+        knn.fit(X_deaths_train, y_death_train)
+        pred_deaths_test = [round(foo) for foo in knn.predict(X_deaths_test)]
+        pred_deaths_train = [round(foot) for foot in knn.predict(X_deaths_train)]
+
+        accuracy_test = accuracy_score(y_death_test, pred_deaths_test)
+        accuracy_train = accuracy_score(y_death_train, pred_deaths_train)
+        print("Модель SVC, показывает прирост умерших на завтра: ", knn.predict(X_died_real_pr))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+        # print("Точность тренировочных данных: %.2f%%" % (accuracy_train * 100.0))
+    else:
+        print('Ты ввел неправльное число в данный метод, долбоёб! Введи 1,2 или 3')
+        print('a=1 -заразившиесяБ, a=2 -выздоровевшие, a=3 -умершие')
+
+svc(a=1)
+
+def svc_rbf(a):
+    if a==1:
+        from sklearn.linear_model import LogisticRegression
+        X_conf_norm = (X_conf_pr - X_conf_pr.mean()) / X_conf_pr.std()
+        X_conf_train,X_conf_test,y_conf_train,y_conf_test=train_test_split(X_conf_norm,y_conf_pr,test_size=0.3,random_state=13,)
+        N_train,_=X_conf_train.shape
+        N_test,_=X_conf_train.shape
+        knn = SVC(kernel='rbf')
+        knn.fit(X_conf_train,y_conf_train)
+        pred_conf_test=[round(abc) for abc in knn.predict(X_conf_test)]
+        pred_conf_train=[round(efg) for efg in knn.predict(X_conf_train)]
+
+        accuracy_train= accuracy_score(y_conf_train, pred_conf_train)
+        accuracy_test = accuracy_score(y_conf_test, pred_conf_test)
+        # print("Точность тренировочных данных: %.2f%%" % (accuracy_train * 100.0))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+        print("Модель SVC rbf, показывает прирост заболевших на завтра: ",knn.predict(X_conf_real_pr))
+    elif a==2:
+        X_rec_norm = (X_rec_pr - X_rec_pr.mean()) / X_rec_pr.std()
+        X_rec_train, X_rec_test, y_rec_train, y_rec_test = train_test_split(X_rec, y_rec_pr, test_size=0.3,
+                                                                                random_state=13 )
+        N_train, _ = X_rec_train.shape
+        N_test, _ = X_rec_train.shape
+        knn = SVC(kernel='rbf')
+        knn.fit(X_rec_train, y_rec_train)
+        pred_rec_test = [round(tt) for tt in knn.predict(X_rec_test)]
+        pred_rec_train = [round(ff) for ff in knn.predict(X_rec_train)]
+
+        accuracy_test = accuracy_score(y_rec_test, pred_rec_test)
+        accuracy_train = accuracy_score(y_rec_train, pred_rec_train)
+        print("Модель SVC rbf, показывает прирост выздоровевших на завтра: ", knn.predict(X_rec_real_pr))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+    elif a==3:
+        X_death_norm = (X_died_pr - X_died_pr.mean()) / X_died_pr.std()
+        X_deaths_train, X_deaths_test, y_death_train, y_death_test = train_test_split(X_death_norm, y_died_pr, test_size=0.2,
+                                                                                random_state=13)
+        N_train, _ = X_deaths_train.shape
+        N_test, _ = X_deaths_train.shape
+        knn = SVC(kernel='rbf')
+        knn.fit(X_deaths_train, y_death_train)
+        pred_deaths_test = [round(foo) for foo in knn.predict(X_deaths_test)]
+        pred_deaths_train = [round(foot) for foot in knn.predict(X_deaths_train)]
+
+        accuracy_test = accuracy_score(y_death_test, pred_deaths_test)
+        accuracy_train = accuracy_score(y_death_train, pred_deaths_train)
+        print("Модель SVC rbf, показывает прирост умерших на завтра: ", knn.predict(X_died_real_pr))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+        # print("Точность тренировочных данных: %.2f%%" % (accuracy_train * 100.0))
+    else:
+        print('Ты ввел неправльное число в данный метод, долбоёб! Введи 1,2 или 3')
+        print('a=1 -заразившиесяБ, a=2 -выздоровевшие, a=3 -умершие')
+
+svc_rbf(a=1)
+from sklearn.ensemble import RandomForestClassifier
+def forest(a):
+    if a==1:
+        from sklearn.linear_model import LogisticRegression
+        X_conf_norm = (X_conf_pr - X_conf_pr.mean()) / X_conf_pr.std()
+        X_conf_train,X_conf_test,y_conf_train,y_conf_test=train_test_split(X_conf_norm,y_conf_pr,test_size=0.3,random_state=13,)
+        N_train,_=X_conf_train.shape
+        N_test,_=X_conf_train.shape
+        knn = RandomForestClassifier(n_estimators=100,random_state=11)
+        knn.fit(X_conf_train,y_conf_train)
+        pred_conf_test=[round(abc) for abc in knn.predict(X_conf_test)]
+        pred_conf_train=[round(efg) for efg in knn.predict(X_conf_train)]
+
+        accuracy_train= accuracy_score(y_conf_train, pred_conf_train)
+        accuracy_test = accuracy_score(y_conf_test, pred_conf_test)
+        # print("Точность тренировочных данных: %.2f%%" % (accuracy_train * 100.0))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+        print("Модель forest, показывает прирост заболевших на завтра: ",knn.predict(X_conf_real_pr))
+    elif a==2:
+        X_rec_norm = (X_rec_pr - X_rec_pr.mean()) / X_rec_pr.std()
+        X_rec_train, X_rec_test, y_rec_train, y_rec_test = train_test_split(X_rec, y_rec_pr, test_size=0.3,
+                                                                                random_state=13 )
+        N_train, _ = X_rec_train.shape
+        N_test, _ = X_rec_train.shape
+        knn = RandomForestClassifier(n_estimators=100,random_state=11)
+        knn.fit(X_rec_train, y_rec_train)
+        pred_rec_test = [round(tt) for tt in knn.predict(X_rec_test)]
+        pred_rec_train = [round(ff) for ff in knn.predict(X_rec_train)]
+
+        accuracy_test = accuracy_score(y_rec_test, pred_rec_test)
+        accuracy_train = accuracy_score(y_rec_train, pred_rec_train)
+        print("Модель forest, показывает прирост выздоровевших на завтра: ", knn.predict(X_rec_real_pr))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+    elif a==3:
+        X_death_norm = (X_died_pr - X_died_pr.mean()) / X_died_pr.std()
+        X_deaths_train, X_deaths_test, y_death_train, y_death_test = train_test_split(X_death_norm, y_died_pr, test_size=0.2,
+                                                                                random_state=13)
+        N_train, _ = X_deaths_train.shape
+        N_test, _ = X_deaths_train.shape
+        knn = RandomForestClassifier(n_estimators=100,random_state=11)
+        knn.fit(X_deaths_train, y_death_train)
+        pred_deaths_test = [round(foo) for foo in knn.predict(X_deaths_test)]
+        pred_deaths_train = [round(foot) for foot in knn.predict(X_deaths_train)]
+
+        accuracy_test = accuracy_score(y_death_test, pred_deaths_test)
+        accuracy_train = accuracy_score(y_death_train, pred_deaths_train)
+        print("Модель forest, показывает прирост умерших на завтра: ", knn.predict(X_died_real_pr))
+        # print("Точность тестовых данных: %.2f%%" % (accuracy_test * 100.0))
+        # print("Точность тренировочных данных: %.2f%%" % (accuracy_train * 100.0))
+    else:
+        print('Ты ввел неправльное число в данный метод, долбоёб! Введи 1,2 или 3')
+        print('a=1 -заразившиесяБ, a=2 -выздоровевшие, a=3 -умершие')
+
+forest(a=1)
+
+from xgboost import XGBClassifier
+import xgboost as xgb
+
+def xgb_model_prirost(a):
+    if a==1:
+        X_conf_norm = (X_conf_1 - X_conf_1.mean()) / X_conf_1.std()
+        X_conf_train,X_conf_test,y_conf_train,y_conf_test=train_test_split(X_conf_pr,y_conf_pr,test_size=0.3,random_state=13,)
+        N_train,_=X_conf_train.shape
+        N_test,_=X_conf_train.shape
+        # vasya=xgb.DMatrix(np.column_stack((X_conf,y_conf)))
+        vasya=xgb.DMatrix(X_conf_pr,label=y_conf_pr)
+        dtest=xgb.DMatrix(X_conf_real_pr) #1.342
+        param = {'max_depth': 12, 'eta': 1.342}
+        model=xgb.train(param,dtrain=vasya,num_boost_round=1)
+        preds=model.predict(dtest)
+        print("Предсказание прироста заболевших на завтра по модели xgboost: ",preds.round())
+    elif a==2:
+        vasya = xgb.DMatrix(X_rec_pr, label=y_rec_pr)
+        dtest = xgb.DMatrix(X_rec_real_pr)  # 1.342
+        param = {'max_depth': 12, 'eta': 1.4}
+        model = xgb.train(param, dtrain=vasya, num_boost_round=1)
+        preds = model.predict(dtest)
+        print("Предсказание прироста выздоровевших на завтра по модели xgboost: ", preds.round())
+    elif a==3:
+        vasya = xgb.DMatrix(X_died_pr, label=y_died_pr)
+        dtest = xgb.DMatrix(X_died_real_pr)  # 1.342
+        param = {'max_depth': 12, 'eta': 1.342}
+        model = xgb.train(param, dtrain=vasya, num_boost_round=1)
+        preds = model.predict(dtest)
+        print("Предсказание прироста умерших на завтра по модели xgboost: ", preds.round())
+    else:
+        print('Ты ввел неправльное число в данный метод, долбоёб! Введи 1,2 или 3')
+        print('a=1 -заразившиеся, a=2 -выздоровевшие, a=3 -умершие')
+
+xgb_model_prirost(1)
+
+def xgb_model(a):
+    if a==1:
+        X_conf_norm = (X_conf_1 - X_conf_1.mean()) / X_conf_1.std()
+        X_conf_train,X_conf_test,y_conf_train,y_conf_test=train_test_split(X_conf,y_conf,test_size=0.3,random_state=13,)
+        N_train,_=X_conf_train.shape
+        N_test,_=X_conf_train.shape
+        # vasya=xgb.DMatrix(np.column_stack((X_conf,y_conf)))
+        vasya=xgb.DMatrix(X_conf,label=y_conf)
+        dtest=xgb.DMatrix(X_conf_real) #1.342
+        param = {'max_depth': 12, 'eta': 1.342}
+        model=xgb.train(param,dtrain=vasya,num_boost_round=1)
+        preds=model.predict(dtest)
+        print("Предсказание количества заболевших на завтра по модели xgboost: ",preds.round())
+    elif a==2:
+        vasya = xgb.DMatrix(X_rec, label=y_rec)
+        dtest = xgb.DMatrix(X_rec_real)  # 1.342
+        param = {'max_depth': 12, 'eta': 1.4}
+        model = xgb.train(param, dtrain=vasya, num_boost_round=1)
+        preds = model.predict(dtest)
+        print("Предсказание количества выздоровевших на завтра по модели xgboost: ", preds.round())
+    elif a==3:
+        vasya = xgb.DMatrix(X_death, label=y_death)
+        dtest = xgb.DMatrix(X_death_real)  # 1.342
+        param = {'max_depth': 12, 'eta': 1.342}
+        model = xgb.train(param, dtrain=vasya, num_boost_round=1)
+        preds = model.predict(dtest)
+        print("Предсказание количества умерших на завтра по модели xgboost: ", preds.round())
+    else:
+        print('Ты ввел неправльное число в данный метод, долбоёб! Введи 1,2 или 3')
+        print('a=1 -заразившиеся, a=2 -выздоровевшие, a=3 -умершие')
+
+xgb_model(1)
+# print(X_rec_real.shape)
+from math import exp
+
+def neuronetwork(a):#недоделана
+    data1 = X_conf
+    data2 = np.array(y_conf)
+
+    def sigmoid(x):
+        return 1 / (1 + np.exp(-x))
+
+    input_data = np.array(data1)
+    # print(data1.shape)
+    training_output = np.reshape(data2,(len(data2),1))
+    # print(training_output.shape)
+    # print(training_output.shape)
+    # print(input_data)
+    # print(training_output)
+    data3 = np.array(X_conf_real)
+    # print(data1.shape)
+    synaptick_weigs1 = 2 * np.random.random((len(input_data.T), 1)) - 1
+    synaptick_weigs=np.array([synaptick_weigs1[i].round(1) for i in range(len(synaptick_weigs1))])
+    # print(synaptick_weigs)
+    # print(synaptick_weigs.shape)
+    # print("Веса, ебана:")
+    # print(synaptick_weigs)
+    # метод обратного распространения
+    # outputs = sigmoid(np.dot(input_layer, synaptick_weigs))
+    # print(outputs.shape)
+    # print(data1.shape)
+    # print(synaptick_weigs.shape)
+    for i in range(10000):
+        input_layer=data1
+        outputs=sigmoid(input_layer.dot(synaptick_weigs))
+        error=training_output-outputs
+        addjust=np.dot((input_layer).T,error*(outputs*(1-outputs)))
+        synaptick_weigs+=addjust
+    print("Веса после обучения:")
+    print(synaptick_weigs)
+
+    print("результат, ебана:")
+    print(outputs)
+    new_input_data=np.array(data3)
+    output=sigmoid(np.dot(new_input_data,synaptick_weigs))
+    print("Новый результат:")
+    print(output)
+# neuronetwork(1)
+
+def sequential(*args,**kwargs):
+    X_conf_norm = (X_conf - X_conf.mean()) / X_conf.std()
+    X_conf_train, X_conf_test, y_conf_train, y_conf_test = train_test_split(X_conf, y_conf, test_size=0.3,
+                                                                            random_state=13, )
+    N_train, _ = X_conf_train.shape
+    N_test, _ = X_conf_train.shape
+
+    model=Sequential()
+    model.add(Dense(1000,input_dim=len(X_conf.T),activation='relu'))
+    # model.add(Dense(1,activation='softmax'))
+
+# sequential(1)
+
+#предугадываем динамику в россии по ариме
+def arima_Russia(a):#a=1 - кол-во зараженных; a=2 - кол-во умерших  ; a=3 - кол-во выздоровевших
+    if a==1:
+        data_conf = pd.concat((pr_confirmed_and_allocated, y_conf_pr), axis=1)
+        data_conf = pd.DataFrame(data_conf, dtype=float)
+        from statsmodels.tsa.arima_model import ARIMA
+        X = data_conf
+        X.index = pd.to_datetime(X.index, yearfirst=True)
+        # X=X.resample('W')
+        # print(X)
+        model = ARIMA(X, order=(7, 2, 7), freq='W')
+        # print(ARIMA._fit_start_params)
+        pr = model.fit(transparams=True, solver='bfgs')
+        resultat = pr.predict(start='17-05-20', end='30-05-20')
+        print(resultat)
+        # pred = model.predict(X,start="25-03-28",end="29-04-29", typ='linear')
+        # print(pred)
+        # model=ARIMA(x_dataframe, order=(1,1,1))
+        # model.fit(full_output=False, disp=0)
+    elif a==2:
+        X = deaths_Russia
+        X.index = pd.to_datetime(X.index, yearfirst=True)
+        # X=X.resample('W')
+        # print(X)
+        model = ARIMA(X, order=(2, 1, 2), freq='D')
+        # print(ARIMA._fit_start_params)
+        pr = model.fit(transparams=True, solver='bfgs')
+        russ_conf_pred = pr.predict(start='29-03-20', end='19-05-20')
+        return russ_conf_pred
+    elif a==3:
+        X = recovered_Russia
+        X.index = pd.to_datetime(X.index, yearfirst=True)
+        # X=X.resample('W')
+        # print(X)
+        model = ARIMA(X, order=(2, 1, 1), freq='D')
+        # print(ARIMA._fit_start_params)
+        pr = model.fit(transparams=False, solver='bfgs')
+        russ_conf_pred = pr.predict(start='29-03-20', end='19-05-20')
+        return russ_conf_pred
+    else:
+        print('Не верное число. Введи 1,2 или 3 долбоеб')
+arima_Russia(1)
+# def predict(*args,**kwargs):
+#
+# predict(1)
